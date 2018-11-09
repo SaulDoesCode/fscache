@@ -21,7 +21,7 @@ func Handler(c Cache, h http.Handler) http.Handler {
 		if w != nil {
 			go func() {
 				defer w.Close()
-				h.ServeHTTP(&respWrapper{
+				h.ServeHTTP(&ResWrapper{
 					ResponseWriter: rw,
 					Writer:         w,
 				}, req)
@@ -31,11 +31,12 @@ func Handler(c Cache, h http.Handler) http.Handler {
 	})
 }
 
-type respWrapper struct {
+// ResWrapper is for writing to http with w of r, w := c.Get(key)
+type ResWrapper struct {
 	http.ResponseWriter
 	io.Writer
 }
 
-func (r *respWrapper) Write(p []byte) (int, error) {
+func (r *ResWrapper) Write(p []byte) (int, error) {
 	return r.Writer.Write(p)
 }
