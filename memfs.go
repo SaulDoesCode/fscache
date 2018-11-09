@@ -7,19 +7,34 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cornelk/hashmap"
 	"gopkg.in/djherbis/stream.v1"
 )
 
 type memFS struct {
-	mu    sync.RWMutex
-	files map[string]*memFile
+	// files map[string]*memFile
+	files *hashmap.HashMap
 }
 
 // NewMemFs creates an in-memory FileSystem.
 // It does not support persistence (Reload is a nop).
 func NewMemFs() FileSystem {
 	return &memFS{
-		files: make(map[string]*memFile),
+		files: &hashmap.HashMap{},
+	}
+}
+
+func (fs *memFS) file(name string) (*memFile, bool) {
+	raw, ok := fs.files.GetStringKey(name)
+	if !ok {
+		return nil, ok
+	}
+	return raw.(*memFile), ok
+}
+
+func (fs *memFS) setfile(name string, mf *memFile) {
+	if mf != nil {
+		fs.files.Set(name, mf)
 	}
 }
 
@@ -28,9 +43,7 @@ func (fs *memFS) Reload(add func(key, name string)) error {
 }
 
 func (fs *memFS) AccessTimes(name string) (rt, wt time.Time, err error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-	f, ok := fs.files[name]
+	f, ok := fs.file(name)
 	if ok {
 		return f.rt, f.wt, nil
 	}
@@ -38,9 +51,7 @@ func (fs *memFS) AccessTimes(name string) (rt, wt time.Time, err error) {
 }
 
 func (fs *memFS) Create(key string) (stream.File, error) {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	if _, ok := fs.files[key]; ok {
+	if _, ok := fs.file(key); ok {
 		return nil, errors.New("file exists")
 	}
 	file := &memFile{
@@ -49,14 +60,12 @@ func (fs *memFS) Create(key string) (stream.File, error) {
 		wt:   time.Now(),
 	}
 	file.memReader.memFile = file
-	fs.files[key] = file
+	fs.setfile(key, file)
 	return file, nil
 }
 
 func (fs *memFS) Open(name string) (stream.File, error) {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	if f, ok := fs.files[name]; ok {
+	if f, ok := fs.file(name); ok {
 		f.rt = time.Now()
 		return &memReader{memFile: f}, nil
 	}
@@ -64,16 +73,12 @@ func (fs *memFS) Open(name string) (stream.File, error) {
 }
 
 func (fs *memFS) Remove(key string) error {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	delete(fs.files, key)
+	fs.files.Del(key)
 	return nil
 }
 
 func (fs *memFS) RemoveAll() error {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	fs.files = make(map[string]*memFile)
+	fs.files = &hashmap.HashMap{}
 	return nil
 }
 
