@@ -6,7 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	
+
+	"github.com/cornelk/hashmap"
 	"gopkg.in/djherbis/stream.v1"
 )
 
@@ -35,10 +36,21 @@ type Cache interface {
 }
 
 type cache struct {
-	mu    sync.RWMutex
-	files map[string]fileStream
+	files *hashmap.HashMap
 	grim  Reaper
 	fs    FileSystem
+}
+
+func (c *cache) file(name string) (fileStream, bool) {
+	raw, ok := c.files.GetStringKey(name)
+	if !ok {
+		return nil, ok
+	}
+	return raw.(fileStream), ok
+}
+
+func (c *cache) setfile(name string, fs fileStream) {
+	c.files.Set(name, fs)
 }
 
 // ReadAtCloser is an io.ReadCloser, and an io.ReaderAt. It supports both so that Range
@@ -79,7 +91,7 @@ func New(dir string, perms os.FileMode, expiry time.Duration) (Cache, error) {
 // Reaper is used to determine when files expire, nil means never expire.
 func NewCache(fs FileSystem, grim Reaper) (Cache, error) {
 	c := &cache{
-		files: make(map[string]fileStream),
+		files: &hashmap.HashMap{},
 		grim:  grim,
 		fs:    fs,
 	}
@@ -99,10 +111,11 @@ func (c *cache) haunter() {
 }
 
 func (c *cache) haunt() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	for key, f := range c.files {
+	for fs := range c.files.Iter() {
+		f := fs.Value.(fileStream)
+		key := fs.Key.(string)
+
 		if f.inUse() {
 			continue
 		}
@@ -113,7 +126,7 @@ func (c *cache) haunt() {
 		}
 
 		if c.grim.Reap(key, lastRead, lastWrite) {
-			delete(c.files, key)
+			c.files.Del(key)
 			c.fs.Remove(f.Name())
 		}
 	}
@@ -121,34 +134,24 @@ func (c *cache) haunt() {
 }
 
 func (c *cache) load() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return c.fs.Reload(func(key, name string) {
-		c.files[key] = c.oldFile(name)
+		c.setfile(key, c.oldFile(name))
 	})
 }
 
 func (c *cache) Exists(key string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	_, ok := c.files[key]
+	_, ok := c.file(key)
 	return ok
 }
 
 func (c *cache) Get(key string) (r ReadAtCloser, w io.WriteCloser, err error) {
-	c.mu.RLock()
-	f, ok := c.files[key]
+	f, ok := c.file(key)
 	if ok {
 		r, err = f.next()
-		c.mu.RUnlock()
 		return r, nil, err
 	}
-	c.mu.RUnlock()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	f, ok = c.files[key]
+	f, ok = c.file(key)
 	if ok {
 		r, err = f.next()
 		return r, nil, err
@@ -166,17 +169,14 @@ func (c *cache) Get(key string) (r ReadAtCloser, w io.WriteCloser, err error) {
 		return nil, nil, err
 	}
 
-	c.files[key] = f
+	c.setfile(key, f)
 
 	return r, f, err
 }
 
 func (c *cache) Remove(key string) error {
-	c.mu.Lock()
-	f, ok := c.files[key]
-	delete(c.files, key)
-	c.mu.Unlock()
-
+	f, ok := c.file(key)
+	c.files.Del(key)
 	if ok {
 		return f.Remove()
 	}
@@ -184,9 +184,7 @@ func (c *cache) Remove(key string) error {
 }
 
 func (c *cache) Clean() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.files = make(map[string]fileStream)
+	c.files = &hashmap.HashMap{}
 	return c.fs.RemoveAll()
 }
 

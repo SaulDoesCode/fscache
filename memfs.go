@@ -12,7 +12,6 @@ import (
 )
 
 type memFS struct {
-	// files map[string]*memFile
 	files *hashmap.HashMap
 }
 
